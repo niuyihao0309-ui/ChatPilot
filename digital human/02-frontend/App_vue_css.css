@@ -1,0 +1,98 @@
+/* ============================================================
+   App.vue <style> 需要的 CSS 改动（方案A：数字人独立左列）
+   详见 02-前端改动说明.md
+   ============================================================ */
+
+/* ── 改动 1：workspace 从两列变三列（原第 1110 行）──
+   原：  grid-template-columns: minmax(0, 1fr) 370px;
+   改成：下面整段（数字人 300px 在最左）
+   同时把下面 .digital-human 样式一并加上 */
+.workspace {
+  grid-template-columns: 300px minmax(0, 1fr) 370px;   /* 数字人 | 聊天 | 业务 */
+}
+
+/* 数字人列 */
+.digital-human {
+  min-height: calc(100vh - 48px);
+  height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  background: var(--color-surface);
+  backdrop-filter: blur(32px) saturate(1.2);
+  -webkit-backdrop-filter: blur(32px) saturate(1.2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* SDK 渲染容器：9:16 竖屏，撑满列宽 */
+.digital-human-sdk {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* 控制按钮区 */
+.digital-human-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dh-btn {
+  padding: 10px 14px;
+  border: none;
+  border-radius: 10px;
+  background: var(--color-primary, #0d9488);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  transition: opacity .15s, transform .15s;
+}
+.dh-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.dh-btn:disabled { opacity: .55; cursor: not-allowed; }
+.dh-btn-active { background: #ff3b30; }
+
+.dh-progress {
+  height: 6px;
+  background: rgba(255, 255, 255, .12);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.dh-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #0d9488, #14b8a6);
+  transition: width .3s;
+}
+.dh-error {
+  font-size: 12px;
+  color: #ff5c5c;
+  word-break: break-all;
+}
+.dh-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, .4);
+}
+
+/* ── 改动 2：窄屏响应式（原 @media 1180px 处，第 2093 行）──
+   原：.workspace { grid-template-columns: 1fr; }
+   改成：数字人列在 1180px 以下收起到聊天上方（单列堆叠），或直接隐藏。
+   推荐隐藏（竖屏数字人在窄屏没意义），用下面这段： */
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+  .digital-human {
+    display: none;   /* 窄屏隐藏数字人列 */
+  }
+}
+
+/* 720px 那档（第 2107 行）.workspace{gap:0} 不用动，数字人已被上面隐藏 */

@@ -1,0 +1,38 @@
+<!-- ============================================================
+     App.vue <template> 需要新增的 HTML 片段（方案A：数字人独立左列）
+     详见 02-前端改动说明.md
+     ============================================================ -->
+
+<!-- 【新增】数字人列：插在第 617 行 <div class="chat-card"> 之前 -->
+<aside class="digital-human">
+  <!-- 魔珐 SDK 渲染容器：必须有明确宽高（9:16 竖屏，最小 270x480） -->
+  <div id="digital-human-sdk" class="digital-human-sdk"></div>
+
+  <!-- 状态区：未连接时给按钮/进度，连接后显示断开 -->
+  <div class="digital-human-controls">
+    <button
+      type="button"
+      class="dh-btn"
+      :class="{ 'dh-btn-active': digitalHumanReady }"
+      :disabled="digitalHumanConnecting"
+      @click="toggleDigitalHuman"
+    >
+      <template v-if="digitalHumanReady">断开数字人</template>
+      <template v-else-if="digitalHumanConnecting">加载中 {{ digitalHumanProgress }}%</template>
+      <template v-else>连接数字人</template>
+    </button>
+
+    <!-- 下载进度条（连接中显示） -->
+    <div v-if="digitalHumanConnecting" class="dh-progress">
+      <div class="dh-progress-bar" :style="{ width: digitalHumanProgress + '%' }"></div>
+    </div>
+
+    <!-- 取凭证/SDK 失败提示 -->
+    <div v-if="digitalHumanError" class="dh-error">{{ digitalHumanError }}</div>
+
+    <!-- 未连接时的占位提示 -->
+    <div v-if="!digitalHumanReady && !digitalHumanConnecting && !digitalHumanError" class="dh-placeholder">
+      3D 数字人待连接
+    </div>
+  </div>
+</aside>

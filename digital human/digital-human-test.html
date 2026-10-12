@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>魔珐星云数字人 · 试跑测试页</title>
+
+  <!--
+    ============================================================
+    魔珐星云数字人「连通性试跑页」
+    用途：不碰完整前端，单文件验证「魔珐能不能连上 + 念不念得出」
+    跑法：必须用 localhost（魔珐 SDK 不支持 file:// 或 IP+http）
+      - 方式1：本文件夹下起静态服务  python -m http.server 8099
+               然后浏览器开 http://localhost:8099/digital-human-test.html
+      - 方式2：VS Code Live Server 插件
+    凭证：下面 App ID / App Secret 两个框，或直接把值填进 <script> 里
+          document.getElementById('appId').value 那两行
+    ============================================================
+  -->
+
+  <!-- 魔珐 lite SDK：加载后全局注入 XmovAvatar 构造函数 -->
+  <script src="https://media.xingyun3d.com/xingyun3d/general/litesdk/xmovAvatar@latest.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 20px;
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #1c1c1e; color: #f5f5f7;
+    }
+    h2 { font-size: 18px; margin: 0 0 4px; }
+    .hint { font-size: 12px; color: #8e8e93; margin: 0 0 14px; }
+    .layout { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+
+    /* 数字人画面：9:16 竖屏，容器必须有明确宽高 */
+    .avatar-box {
+      width: 270px; height: 480px; flex-shrink: 0;
+      background: #000; border-radius: 14px; overflow: hidden;
+      border: 1px solid #333;
+    }
+    #sdk { width: 270px; height: 480px; }
+
+    /* 右侧控制区 */
+    .panel { flex: 1; min-width: 320px; display: flex; flex-direction: column; gap: 10px; }
+    label { font-size: 12px; color: #8e8e93; }
+    input, textarea {
+      width: 100%; padding: 9px 10px; border-radius: 9px;
+      border: 1px solid #3a3a3c; background: #2c2c2e; color: #f5f5f7;
+      font-size: 13px; font-family: inherit; resize: vertical;
+    }
+    textarea { min-height: 52px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      padding: 9px 16px; border: none; border-radius: 9px;
+      background: #0d9488; color: #fff; font-size: 13px; cursor: pointer;
+      transition: opacity .15s;
+    }
+    button:disabled { background: #48484a; cursor: not-allowed; }
+    button.danger { background: #ff3b30; }
+    .status {
+      font-size: 13px; padding: 8px 12px; border-radius: 9px;
+      background: #2c2c2e; border: 1px solid #3a3a3c;
+    }
+    .status.ready { border-color: #34c759; }
+    .status.loading { border-color: #ff9500; }
+    .status.error { border-color: #ff3b30; }
+    .progress { height: 6px; background: #3a3a3c; border-radius: 3px; overflow: hidden; }
+    .progress > div { height: 100%; width: 0; background: linear-gradient(90deg,#0d9488,#14b8a6); transition: width .3s; }
+    pre#log {
+      flex: 1; min-height: 120px; padding: 10px; margin: 0;
+      background: #000; color: #98c379; border-radius: 9px;
+      font-size: 12px; overflow: auto; white-space: pre-wrap; font-family: Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <h2>魔珐星云数字人 · 连通性试跑</h2>
+  <p class="hint">填 App ID / App Secret → 点「连接」→ 资源下载完数字人出现 → 点「念出来」验证。必须 localhost 打开。</p>
+
+  <div class="layout">
+    <!-- 数字人渲染容器 -->
+    <div class="avatar-box"><div id="sdk"></div></div>
+
+    <!-- 控制区 -->
+    <div class="panel">
+      <div class="status" id="status">状态：等待连接</div>
+
+      <!-- 凭证（也可以直接填到 <script> 里预置） -->
+      <label>App ID</label>
+      <input id="appId" placeholder="魔珐 AppId（右上角「接入SDK」/「密钥」页获取）" />
+      <label>App Secret</label>
+      <input id="appSecret" placeholder="魔珐 AppSecret（等同密码，别外传）" />
+      <label>Gateway（一般不改）</label>
+      <input id="gateway" value="https://nebula-agent.xingyun3d.com/user/v1/ttsa/session" />
+
+      <div class="row">
+        <button id="connectBtn">连接数字人</button>
+        <button id="destroyBtn" class="danger" disabled>断开</button>
+      </div>
+      <div class="progress"><div id="bar"></div></div>
+
+      <!-- 让它念一段（接法A：我们喂文本，魔珐只负责念+动嘴） -->
+      <label>让数字人念这段</label>
+      <textarea id="say">你好，我是电商小二的数字人客服，帮你查订单、查物流都可以。</textarea>
+      <div class="row">
+        <button id="speakBtn" disabled>念出来</button>
+        <button id="idleBtn" disabled>打断 / 待机</button>
+      </div>
+
+      <pre id="log"></pre>
+    </div>
+  </div>
+
+  <script>
+    /* ============================================================
+     * 凭证已预置（本地试跑专用）
+     * ⚠️ 注意：本文件内联了真实 App Secret，属于机密，
+     *          千万不要提交进 git / 不要放到公网。
+     *          生产环境必须走后端 /api/digital-human/credentials 动态下发。
+     * ============================================================ */
+    document.getElementById('appId').value     = '257898383e0b4de38ee00096af258be3';
+    document.getElementById('appSecret').value  = 'a58f1ffa1ca54e1b9fb5466bebb878a9';
+
+    const logEl   = document.getElementById('log');
+    const statusEl= document.getElementById('status');
+    const bar     = document.getElementById('bar');
+    const connectBtn = document.getElementById('connectBtn');
+    const destroyBtn = document.getElementById('destroyBtn');
+    const speakBtn   = document.getElementById('speakBtn');
+    const idleBtn    = document.getElementById('idleBtn');
+
+    let liteSDK = null;   // SDK 实例
+    let ready   = false;  // 资源是否下载完
+
+    // 日志（页面内 + 控制台）
+    function log(...args) {
+      const line = args.map(a => (a && typeof a === 'object') ? JSON.stringify(a) : a).join(' ');
+      logEl.textContent += '[' + new Date().toLocaleTimeString() + '] ' + line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log.apply(console, args);
+    }
+    function setStatus(text, level) {
+      statusEl.textContent = '状态：' + text;
+      statusEl.className = 'status' + (level ? ' ' + level : '');
+    }
+
+    /* 连接数字人 */
+    connectBtn.onclick = () => {
+      const appId     = document.getElementById('appId').value.trim();
+      const appSecret = document.getElementById('appSecret').value.trim();
+      const gateway   = document.getElementById('gateway').value.trim();
+      if (!appId || !appSecret) { setStatus('请先填 App ID 和 App Secret', 'error'); return; }
+
+      setStatus('正在连接，下载资源中…', 'loading');
+      connectBtn.disabled = true;
+      log('开始创建 SDK 实例…');
+
+      liteSDK = new XmovAvatar({
+        containerId: '#sdk',              // 必须带 #
+        appId, appSecret,
+        gatewayServer: gateway,
+        hardwareAcceleration: 'prefer-hardware',
+        enableLogger: true,               // 开发期开日志排查
+        onMessage(m) {                    // 50001/50002 是正常切换，忽略
+          log('SDK:', m);
+          if (m && m.code && m.code !== 50001 && m.code !== 50002) {
+            setStatus('SDK 错误 code=' + m.code + ' ' + (m.message || ''), 'error');
+          }
+        },
+      });
+
+      // 关键：init() 下资源 + 建 WebSocket；进度到 100% 才能 speak
+      liteSDK.init({
+        initModel: 'normal',
+        onDownloadProgress(p) {
+          bar.style.width = p + '%';
+          log('下载进度', p + '%');
+          if (p >= 100 && !ready) {
+            ready = true;
+            speakBtn.disabled = false;
+            idleBtn.disabled = false;
+            destroyBtn.disabled = false;
+            connectBtn.disabled = false;
+            setStatus('就绪，可以念了', 'ready');
+            log('✅ 数字人就绪');
+          }
+        },
+      });
+    };
+
+    /* 念一段完整的话（is_start=true, is_end=true） */
+    speakBtn.onclick = () => {
+      const text = document.getElementById('say').value.trim();
+      if (!text || !ready) { log('⚠️ 未就绪或没内容'); return; }
+      // 两句之间官方建议先切一次待机，口型更顺
+      liteSDK.interactiveidle();
+      liteSDK.speak(text, true, true);
+      log('speak:', text);
+    };
+
+    /* 打断 / 回待机 */
+    idleBtn.onclick = () => { if (liteSDK) { liteSDK.interactiveidle(); log('切待机'); } };
+
+    /* 断开销毁 */
+    destroyBtn.onclick = () => {
+      try { liteSDK && liteSDK.destroy(); } catch (e) {}
+      liteSDK = null; ready = false;
+      speakBtn.disabled = idleBtn.disabled = destroyBtn.disabled = true;
+      connectBtn.disabled = false; bar.style.width = '0%';
+      setStatus('已断开', 'error'); log('已断开');
+    };
+
+    // 页面卸载前断开，防并发超限（错误码 10005）
+    window.addEventListener('beforeunload', () => { try { liteSDK && liteSDK.destroy(); } catch (e) {} });
+  </script>
+</body>
+</html>
