@@ -15,6 +15,14 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./mysql/initdb:/docker-entrypoint-initdb.d
+    # 健康检查：一键启动脚本靠它判断数据库是否真正就绪
+    # （容器 up 之后 MySQL 还要几十秒初始化，端口通 ≠ 能用）
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
 volumes:
   mysql_data:
