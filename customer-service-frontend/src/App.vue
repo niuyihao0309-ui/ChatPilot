@@ -3,6 +3,18 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import xiaoerAvatar from './assets/xiaoer.png'
 import userProfileAvatar from './assets/userProfileAvatar.svg'
 
+// ── 自动升级到 https ──────────────────────────────────────────
+// 魔珐数字人依赖浏览器「安全上下文」，http 的公网地址会被 SDK 直接拒绝（code=10005）。
+// 所以只要发现是 http 且不是本机，就自动跳到 https 同地址 —— 用户不需要记两个网址。
+// 本机 localhost / 127.0.0.1 天然是安全上下文，不跳。
+;(function autoUpgradeToHttps() {
+  const { protocol, hostname, host, pathname, search } = window.location
+  const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
+  if (protocol === 'http:' && !isLocalHost && !window.isSecureContext) {
+    window.location.replace('https://' + host + pathname + search)
+  }
+})()
+
 const senderId = ref('u1001')
 const draftMessage = ref('')
 const isSending = ref(false)
@@ -222,9 +234,25 @@ const commerceProductsEndpoint = computed(
   () => `/commerce/users/${encodeURIComponent(senderId.value.trim())}/products`
 )
 
+// 生成 RFC4122 v4 UUID。
+// 注意：crypto.randomUUID() 只在「安全上下文」暴露 —— 即 https:// 或 localhost/127.0.0.1。
+// 公网裸 IP + 明文 http（如 http://82.157.59.218/）不是安全上下文，
+// crypto.randomUUID 为 undefined，直接调用会抛 TypeError，导致发消息整体失败。
+// 降级顺序：原生 randomUUID → crypto.getRandomValues → Math.random。
+function uuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  const b = new Uint8Array(16)
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(b)
+  else for (let i = 0; i < 16; i += 1) b[i] = Math.floor(Math.random() * 256)
+  b[6] = (b[6] & 0x0f) | 0x40 // version 4
+  b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 function createBaseMessage(role) {
   return {
-    id: crypto.randomUUID(),
+    id: uuid(),
     role,
     buttons: [],
   }
@@ -571,6 +599,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (bgCanvas.value?._cleanup) bgCanvas.value._cleanup()
   // 数字人：页面卸载前断开连接，释放魔珐房间资源，避免触发并发超限（10005）
+  clearDhWatchdog()
   try { liteSDK && liteSDK.destroy() } catch (e) { /* 忽略 */ }
   liteSDK = null
 })
@@ -605,10 +634,32 @@ async function playTts(botMsg) {
   }
 }
 
+// navigator.clipboard 与 crypto.randomUUID 同属「只在安全上下文暴露」的 API。
+// 公网裸 IP + http 下 navigator.clipboard 为 undefined，这里降级到
+// textarea + document.execCommand('copy')，保证复制按钮在非安全上下文也能用。
+async function copyText(text) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.top = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  try {
+    if (!document.execCommand('copy')) throw new Error('execCommand("copy") 返回 false')
+  } finally {
+    document.body.removeChild(ta)
+  }
+}
+
 async function copyBotText(botMsg) {
   const msgId = botMsg.id
   try {
-    await navigator.clipboard.writeText(botMsg.text)
+    await copyText(botMsg.text)
     copyState.value[msgId] = true
     setTimeout(() => { copyState.value[msgId] = false }, 1800)
   } catch (error) {
@@ -646,12 +697,30 @@ function startResize(e) {
   document.addEventListener('mouseup', onUp)
 }
 
+// ── 数字人失败收尾 ────────────────────────────────────────────
+// 之前失败只赋 digitalHumanError，没复位 digitalHumanConnecting，
+// 结果按钮永久停在「加载中 0%」且被禁用 —— 看起来像卡死连不上。
+let dhWatchdog = null
+function clearDhWatchdog() {
+  if (dhWatchdog) { clearTimeout(dhWatchdog); dhWatchdog = null }
+}
+function dhFail(msg) {
+  clearDhWatchdog()
+  digitalHumanError.value = msg
+  digitalHumanConnecting.value = false   // ← 关键：不复位就永久卡在「加载中 0%」
+  digitalHumanProgress.value = 0
+  digitalHumanReady.value = false
+  try { liteSDK && liteSDK.destroy() } catch (e) { /* 忽略销毁异常 */ }
+  liteSDK = null
+}
+
 // 连接 / 断开 二合一按钮
 async function toggleDigitalHuman() {
   digitalHumanError.value = ''
 
   // 已连接 / 连接中 → 断开销毁
   if (digitalHumanReady.value || digitalHumanConnecting.value) {
+    clearDhWatchdog()
     try { liteSDK && liteSDK.destroy() } catch (e) { /* 忽略销毁异常 */ }
     liteSDK = null
     digitalHumanReady.value = false
@@ -660,9 +729,25 @@ async function toggleDigitalHuman() {
     return
   }
 
+  // 0. 安全上下文预检
+  //    魔珐 lite SDK 把 window.isSecureContext 列为 severity="fatal"，
+  //    非 https / 非 localhost 时 init 直接报 code=10005，连网络请求都不会发。
+  //    这里提前拦掉，给一句人话，而不是让它卡在 0%。
+  if (!window.isSecureContext) {
+    dhFail('当前页面不是安全上下文（http 访问），魔珐数字人无法初始化。请用 https:// 或 http://localhost 打开本页面。')
+    return
+  }
+
   // 未连接 → 初始化
   digitalHumanConnecting.value = true
   digitalHumanProgress.value = 0
+  // 看门狗：60 秒还没有任何进展就判超时，别让人干等
+  clearDhWatchdog()
+  dhWatchdog = setTimeout(() => {
+    if (digitalHumanConnecting.value && !digitalHumanReady.value) {
+      dhFail('数字人连接超时（60 秒无进度），请检查网络后重试。')
+    }
+  }, 60000)
   try {
     // 1. 从后端拿凭证（密钥不硬编码进前端源码）
     const resp = await fetch('/api/digital-human/credentials')
@@ -683,26 +768,34 @@ async function toggleDigitalHuman() {
       onMessage(m) {
         // 50001/50002 是在线/离线切换，正常；其余才告警
         if (m && m.code && m.code !== 50001 && m.code !== 50002) {
-          digitalHumanError.value = 'SDK 错误 code=' + m.code + ' ' + (m.message || '')
+          // 10005 = INIT_ERROR，message 里已带明「哪项能力不满足」
+          dhFail('数字人连接失败（code=' + m.code + '）' + (m.message || ''))
         }
       },
     })
 
     // 3. 初始化连接：下资源 + 建 WebSocket；进度到 100% 才能 speak
-    liteSDK.init({
+    const initRet = liteSDK.init({
       initModel: 'normal',
       onDownloadProgress(p) {
         digitalHumanProgress.value = p
         if (p >= 100 && !digitalHumanReady.value) {
+          clearDhWatchdog()
           digitalHumanReady.value = true
           digitalHumanConnecting.value = false
         }
       },
     })
+    // init 返回 Promise，SDK 内部异常会走 reject；不接住就是「静默失败」
+    if (initRet && typeof initRet.catch === 'function') {
+      initRet.catch((e) => {
+        console.error('[数字人] init reject', e)
+        dhFail('数字人初始化异常：' + (e && e.message ? e.message : String(e)))
+      })
+    }
   } catch (e) {
     console.error('[数字人]', e)
-    digitalHumanError.value = e instanceof Error ? e.message : '连接失败'
-    digitalHumanConnecting.value = false
+    dhFail(e instanceof Error ? e.message : '连接失败')
   }
 }
 
